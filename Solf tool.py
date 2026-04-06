@@ -18,7 +18,7 @@ COMPOUND_ZOO = {
     "Kingfisher": [1.0, 0.25, 0.25], "Kookaburra": [0.75, 0.25, 0.25, 0.25]
 }
 
-# --- 2. AUDIO ENGINE (Cloud-Safe) ---
+# --- 2. AUDIO ENGINE ---
 def generate_audio(score, bpm=60, timbre="E-Piano"):
     sample_rate = 44100; total_audio = np.array([], dtype=np.float32); beat_dur = 60.0 / bpm 
     for element in score.recurse():
@@ -57,60 +57,69 @@ def build_drill(u_meter, u_key, u_mode, u_range, u_animals, u_measures):
         p.append(m); animal_history.append(f"Measure {m_num}: " + ", ".join(measure_animals))
     s.append(p); return s, animal_history
 
-# --- 4. THE ROBUST RENDERER ---
+# --- 4. THE FLEXIBLE RENDERER ---
 def render_vexflow(score, meter_val, key_obj):
-    measure_js = []
     solf_map = {1:"Do", 2:"Re", 3:"Mi", 4:"Fa", 5:"Sol", 6:"La", 7:"Ti"} if key_obj.mode == "major" else {1:"Do", 2:"Re", 3:"Me", 4:"Fa", 5:"Sol", 6:"Le", 7:"Te"}
-    dur_map = {4.0:"w", 2.0:"h", 1.5:"q", 1.0:"q", 0.75:"8", 0.5:"8", 0.25:"16"}
+    dur_map = {4.0:"w", 2.0:"h", 1.5:"q.", 1.0:"q", 0.75:"8.", 0.5:"8", 0.25:"16"}
 
-    # Process each measure individually for perfect barlines
+    measure_js = []
     measures = score.parts[0].getElementsByClass('Measure')
     for m in measures:
-        if m.number == 1: continue # Skip anchor in visual
+        if m.number == 1: continue 
         notes_in_m = []
         for n in m.notesAndRests:
             p_name = f"{n.pitch.name.lower().replace('#','').replace('-','')}/{n.pitch.octave}" if n.isNote else "b/4"
             dur = dur_map.get(n.quarterLength, "q")
             type_s = "r" if n.isRest else ""
             syllable = solf_map.get(key_obj.getScaleDegreeFromPitch(n.pitch), "") if n.isNote else ""
+            dots = 1 if "." in dur else 0
+            clean_dur = dur.replace(".", "")
             
-            note_js = f"new Vex.Flow.StaveNote({{keys:['{p_name}'], duration:'{dur}{type_s}'}})"
+            note_js = f"new Vex.Flow.StaveNote({{keys:['{p_name}'], duration:'{clean_dur}{type_s}'}})"
+            if dots > 0: note_js += ".addModifier(new Vex.Flow.Dot(), 0)"
             if syllable:
                 note_js += f".addModifier(new Vex.Flow.Annotation('{syllable}').setVerticalJustification(Vex.Flow.Annotation.VerticalJustify.BOTTOM), 0)"
             notes_in_m.append(note_js)
         measure_js.append(f"[{','.join(notes_in_m)}]")
 
     all_measures_js = ",".join(measure_js)
-    width = 250 * len(measure_js) # Dynamically set width so it doesn't cut off
+    # 300px per measure prevents overlap. 150px for the clef/key stinger.
+    canvas_width = 150 + (300 * len(measure_js))
     
+    # 6/8 meter needs num_beats=6, beat_value=8. 4/4 needs num_beats=4, beat_value=4.
+    num_beats = 4 if meter_val == '4/4' else 6
+    beat_value = 4 if meter_val == '4/4' else 8
+
     vex_html = f"""
-    <div id="output" style="background:white; overflow-x:auto;"></div>
+    <div id="output" style="background:white; overflow-x:auto; width: 100%; border-radius: 8px;"></div>
     <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.2/build/cjs/vexflow.js"></script>
     <script>
         const div = document.getElementById("output");
         const renderer = new Vex.Flow.Renderer(div, Vex.Flow.Renderer.Backends.SVG);
-        renderer.resize({width}, 200);
+        renderer.resize({canvas_width}, 200);
         const context = renderer.getContext();
         const measureData = [{all_measures_js}];
         let xCursor = 10;
 
         measureData.forEach((notes, i) => {{
-            const stave = new Vex.Flow.Stave(xCursor, 40, 240);
+            let mWidth = (i === 0) ? 350 : 300; // First measure is wider to hold Clef/Key/Meter
+            const stave = new Vex.Flow.Stave(xCursor, 40, mWidth);
             if (i === 0) stave.addClef("treble").addTimeSignature("{meter_val}");
             stave.setContext(context).draw();
-            const voice = new Vex.Flow.Voice({{num_beats: {4 if meter_val=='4/4' else 3}, beat_value: 4}});
+            
+            const voice = new Vex.Flow.Voice({{num_beats: {num_beats}, beat_value: {beat_value}}});
             voice.setStrict(false).addTickables(notes);
-            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
+            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], mWidth - 50);
             voice.draw(context, stave);
-            xCursor += 240;
+            xCursor += mWidth;
         }});
     </script>
     """
     components.html(vex_html, height=250, scrolling=True)
 
 # --- 5. UI ---
-st.set_page_config(page_title="SolfMaster v4.19")
-st.title("🎼 SolfMaster v4.19")
+st.set_page_config(page_title="SolfMaster v4.20", layout="wide")
+st.title("🎼 SolfMaster v4.20")
 
 with st.sidebar:
     u_meter = st.radio("Meter", ['4/4', '6/8'])
