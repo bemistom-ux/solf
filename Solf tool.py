@@ -59,7 +59,6 @@ def build_zoo_drill_v48(u_meter, u_key, u_mode, u_range, u_animals, u_measures):
     while tonic_pitch.ps < pitch.Pitch(ranges[u_range]).ps: tonic_pitch = tonic_pitch.transpose(12)
     pitches = k.getScale().getPitches(tonic_pitch, tonic_pitch.transpose(12))
 
-    # ANCHOR (MEASURE 1)
     anchor_m = stream.Measure(number=1)
     stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)])
     stinger.duration.quarterLength = 2.0 if u_meter == '4/4' else 1.5
@@ -67,7 +66,6 @@ def build_zoo_drill_v48(u_meter, u_key, u_mode, u_range, u_animals, u_measures):
     anchor_m.append(note.Rest(quarterLength=stinger.duration.quarterLength))
     p.append(anchor_m)
 
-    # DRILL (MEASURES 2+)
     zoo = SIMPLE_ZOO if u_meter == '4/4' else COMPOUND_ZOO
     for m_num in range(2, u_measures + 2):
         m = stream.Measure(number=m_num)
@@ -103,34 +101,28 @@ with st.sidebar:
     u_meter = st.radio("Meter", ['4/4', '6/8'])
     u_key = st.selectbox("Key", ['C', 'G', 'F', 'D', 'Bb', 'Eb', 'A'])
     u_mode = st.radio("Mode", ["major", "minor"])
-    
     available = list(SIMPLE_ZOO.keys()) if u_meter == '4/4' else list(COMPOUND_ZOO.keys())
     u_all = st.checkbox("Randomize All", value=True)
     if u_all:
         u_animals = available
     else:
         u_animals = st.multiselect("Zoo Selection:", available, default=available[:2])
-    
     u_range = st.selectbox("Range", ["Baritone", "Tenor", "Alto", "Soprano"])
     u_bpm = st.slider("BPM", 40, 120, 60)
     u_timbre = st.selectbox("Sound", ["E-Piano", "Percussion", "Organ"])
     u_measures = st.number_input("Measures", 1, 8, 2)
     u_dictation = st.checkbox("Dictation Mode")
 
-# --- GENERATE ACTION ---
 if st.button("Generate New Drill"):
-    # Fix for the selection error:
     current_pool = u_animals if u_animals else available[:1]
     st.session_state['score'], st.session_state['history'] = build_zoo_drill_v48(u_meter, u_key, u_mode, u_range, current_pool, u_measures)
 
-# --- DISPLAY (SAFETY GATED) ---
 if 'score' in st.session_state:
     st.divider()
     audio = generate_audio_v48(st.session_state['score'], u_bpm, u_timbre)
     st.audio(audio)
-    
-    # Check for history before displaying to prevent KeyError
     if 'history' in st.session_state:
         if not u_dictation or st.checkbox("Reveal Answer"):
             st.subheader("The Rhythmic Animals")
             for line in st.session_state['history']:
+                st.write(f"**{line}**")
