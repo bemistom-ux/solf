@@ -1,17 +1,12 @@
 import streamlit as st
-from music21 import stream, note, chord, key, meter, pitch, environment
+import streamlit.components.v1 as components
 import random
 import numpy as np
 from scipy.io import wavfile
 import io
-import os
+from music21 import stream, note, chord, key, meter, pitch
 
-# --- 1. RESET ENVIRONMENT ---
-# We go back to the simplest declaration possible.
-env = environment.Environment()
-env['musescoreDirectPNGPath'] = '/Applications/MuseScore 4.app/Contents/MacOS/mscore'
-
-# --- 2. THE ZOO (RESTORED) ---
+# --- 1. ZOO DEFINITIONS ---
 SIMPLE_ZOO = {
     "Bear": [1.0], "Monkey": [0.5, 0.5], "Tiger": [0.75, 0.25],
     "Elephant": [0.25, 0.25, 0.5], "Grasshopper": [0.5, 0.25, 0.25],
@@ -23,7 +18,7 @@ COMPOUND_ZOO = {
     "Kingfisher": [1.0, 0.25, 0.25], "Kookaburra": [0.75, 0.25, 0.25, 0.25]
 }
 
-# --- 3. AUDIO ENGINE ---
+# --- 2. AUDIO ENGINE (Cloud-Safe) ---
 def generate_audio(score, bpm=60, timbre="E-Piano"):
     sample_rate = 44100; total_audio = np.array([], dtype=np.float32); beat_dur = 60.0 / bpm 
     for element in score.recurse():
@@ -40,46 +35,82 @@ def generate_audio(score, bpm=60, timbre="E-Piano"):
     if total_audio.size > 0: total_audio = total_audio / (np.max(np.abs(total_audio)) + 1e-6)
     byte_io = io.BytesIO(); wavfile.write(byte_io, sample_rate, (total_audio * 32767).astype(np.int16)); return byte_io.getvalue()
 
-# --- 4. DRILL BUILDER ---
+# --- 3. DRILL BUILDER ---
 def build_drill(u_meter, u_key, u_mode, u_range, u_animals, u_measures):
-    s = stream.Score(); p = stream.Part(); k = key.Key(u_key, u_mode)
-    p.append(k); p.append(meter.TimeSignature(u_meter))
-    
-    animal_history = []
-    ranges = {"Soprano": "C4", "Alto": "G3", "Tenor": "C3", "Baritone": "G2"}
+    s = stream.Score(); p = stream.Part(); k = key.Key(u_key, u_mode); p.append(k); p.append(meter.TimeSignature(u_meter))
+    animal_history = []; ranges = {"Soprano": "C4", "Alto": "G3", "Tenor": "C3", "Baritone": "G2"}
     tonic_pitch = k.pitchFromDegree(1)
     while tonic_pitch.ps < pitch.Pitch(ranges[u_range]).ps: tonic_pitch = tonic_pitch.transpose(12)
     pitches = k.getScale().getPitches(tonic_pitch, tonic_pitch.transpose(12))
-
-    # Anchor
-    anchor_m = stream.Measure(number=1)
-    stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)])
-    stinger.duration.quarterLength = 2.0 if u_meter == '4/4' else 1.5
-    anchor_m.append(stinger); anchor_m.append(note.Rest(quarterLength=stinger.duration.quarterLength))
-    p.append(anchor_m)
-
-    # Drill
+    
+    # Measure 1: Anchor
+    m1 = stream.Measure(number=1); stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)])
+    stinger.duration.quarterLength = 2.0 if u_meter == '4/4' else 1.5; m1.append(stinger); m1.append(note.Rest(quarterLength=stinger.duration.quarterLength)); p.append(m1)
+    
     zoo = SIMPLE_ZOO if u_meter == '4/4' else COMPOUND_ZOO
     for m_num in range(2, u_measures + 2):
-        m = stream.Measure(number=m_num)
-        beats_needed = 4.0 if u_meter == '4/4' else 3.0
-        beats_filled = 0; measure_animals = []
+        m = stream.Measure(number=m_num); beats_needed = 4.0 if u_meter == '4/4' else 3.0; beats_filled = 0; measure_animals = []
         while beats_filled < beats_needed:
             choice = random.choice(u_animals); measure_animals.append(choice); pattern = zoo[choice]
-            for dur in pattern:
-                n = note.Note(random.choice(pitches), quarterLength=dur)
-                # Simple Solfege Lyrics
-                deg = k.getScaleDegreeFromPitch(n.pitch)
-                solf = {1:"Do", 2:"Re", 3:"Mi", 4:"Fa", 5:"Sol", 6:"La", 7:"Ti"} if u_mode=="major" else {1:"Do", 2:"Re", 3:"Me", 4:"Fa", 5:"Sol", 6:"Le", 7:"Te"}
-                n.addLyric(solf.get(deg, n.pitch.name))
-                m.append(n)
+            for dur in pattern: m.append(note.Note(random.choice(pitches), quarterLength=dur))
             beats_filled += sum(pattern)
         p.append(m); animal_history.append(f"Measure {m_num}: " + ", ".join(measure_animals))
     s.append(p); return s, animal_history
 
+# --- 4. THE ROBUST RENDERER ---
+def render_vexflow(score, meter_val, key_obj):
+    measure_js = []
+    solf_map = {1:"Do", 2:"Re", 3:"Mi", 4:"Fa", 5:"Sol", 6:"La", 7:"Ti"} if key_obj.mode == "major" else {1:"Do", 2:"Re", 3:"Me", 4:"Fa", 5:"Sol", 6:"Le", 7:"Te"}
+    dur_map = {4.0:"w", 2.0:"h", 1.5:"q", 1.0:"q", 0.75:"8", 0.5:"8", 0.25:"16"}
+
+    # Process each measure individually for perfect barlines
+    measures = score.parts[0].getElementsByClass('Measure')
+    for m in measures:
+        if m.number == 1: continue # Skip anchor in visual
+        notes_in_m = []
+        for n in m.notesAndRests:
+            p_name = f"{n.pitch.name.lower().replace('#','').replace('-','')}/{n.pitch.octave}" if n.isNote else "b/4"
+            dur = dur_map.get(n.quarterLength, "q")
+            type_s = "r" if n.isRest else ""
+            syllable = solf_map.get(key_obj.getScaleDegreeFromPitch(n.pitch), "") if n.isNote else ""
+            
+            note_js = f"new Vex.Flow.StaveNote({{keys:['{p_name}'], duration:'{dur}{type_s}'}})"
+            if syllable:
+                note_js += f".addModifier(new Vex.Flow.Annotation('{syllable}').setVerticalJustification(Vex.Flow.Annotation.VerticalJustify.BOTTOM), 0)"
+            notes_in_m.append(note_js)
+        measure_js.append(f"[{','.join(notes_in_m)}]")
+
+    all_measures_js = ",".join(measure_js)
+    width = 250 * len(measure_js) # Dynamically set width so it doesn't cut off
+    
+    vex_html = f"""
+    <div id="output" style="background:white; overflow-x:auto;"></div>
+    <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.2/build/cjs/vexflow.js"></script>
+    <script>
+        const div = document.getElementById("output");
+        const renderer = new Vex.Flow.Renderer(div, Vex.Flow.Renderer.Backends.SVG);
+        renderer.resize({width}, 200);
+        const context = renderer.getContext();
+        const measureData = [{all_measures_js}];
+        let xCursor = 10;
+
+        measureData.forEach((notes, i) => {{
+            const stave = new Vex.Flow.Stave(xCursor, 40, 240);
+            if (i === 0) stave.addClef("treble").addTimeSignature("{meter_val}");
+            stave.setContext(context).draw();
+            const voice = new Vex.Flow.Voice({{num_beats: {4 if meter_val=='4/4' else 3}, beat_value: 4}});
+            voice.setStrict(false).addTickables(notes);
+            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
+            voice.draw(context, stave);
+            xCursor += 240;
+        }});
+    </script>
+    """
+    components.html(vex_html, height=250, scrolling=True)
+
 # --- 5. UI ---
-st.set_page_config(page_title="SolfMaster v4.18")
-st.title("🎼 SolfMaster v4.18")
+st.set_page_config(page_title="SolfMaster v4.19")
+st.title("🎼 SolfMaster v4.19")
 
 with st.sidebar:
     u_meter = st.radio("Meter", ['4/4', '6/8'])
@@ -100,6 +131,5 @@ if 'score' in st.session_state:
     st.audio(generate_audio(st.session_state['score'], u_bpm, u_timbre))
     if not u_dictation or st.checkbox("Reveal Answer"):
         st.subheader("Results")
-        # Back to the simplest rendering call
-        st.image(st.session_state['score'].write('musicxml.png'))
+        render_vexflow(st.session_state['score'], u_meter, st.session_state['score'].analyze('key'))
         for line in st.session_state['history']: st.write(f"**{line}**")
