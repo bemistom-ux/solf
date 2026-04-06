@@ -152,4 +152,5 @@ if 'score' in st.session_state:
     if not u_dictation or st.checkbox("Reveal Answer"):
         st.subheader("Results")
         render_vexflow(st.session_state['score'], u_meter, st.session_state['score'].analyze('key'))
-        for line in st.session_state['history']: st.write(f"**{line}**")
+        for line in st.session_state['history']: 
+            st.write(f"**{line}**")
