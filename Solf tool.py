@@ -4,7 +4,7 @@ import numpy as np
 from scipy.io import wavfile
 import io
 import os
-from music21 import stream, note, chord, key, meter, pitch, environment, duration
+from music21 import stream, note, chord, key, meter, pitch, environment
 
 # --- 0. SYSTEM CONFIG ---
 try:
@@ -15,24 +15,20 @@ try:
 except:
     pass
 
-# --- 1. THE ATOMIC ZOO ---
-SIMPLE_ZOO = {
-    "Bear": [1.0], "Monkey": [0.5, 0.5], "Tiger": [0.75, 0.25],
-    "Elephant": [0.25, 0.25, 0.5], "Grasshopper": [0.5, 0.25, 0.25],
-    "Alligator": [0.25, 0.25, 0.25, 0.25], "Box Turtle": [0.25, 0.5, 0.25],
-    "Trip-o-let": "TRIPLET"
+# --- 1. DATA & LEVELS ---
+LEVELS = {
+    1: {"name": "The Pulse", "desc": "Quarter Notes only (The Monkey).", "pool": [[1.0]]},
+    2: {"name": "The Breath", "desc": "Adds Quarter Rests (The Silent Monkey).", "pool": [[1.0], ['R', 1.0]]},
+    3: {"name": "Division", "desc": "Adds Eighth Notes (The Elephant).", "pool": [[1.0], ['R', 1.0], [0.5, 0.5]]},
+    4: {"name": "The Gap", "desc": "Eighths following Rests.", "pool": [[1.0], ['R', 1.0], [0.5, 0.5], ['R', 1.0, 0.5, 0.5]]},
+    5: {"name": "The Dot", "desc": "Dotted Quarters (The Tiger).", "pool": [[1.0], [0.5, 0.5], [1.5, 0.5]]},
+    6: {"name": "Sub-Division", "desc": "Sixteenths (The Alligator).", "pool": [[1.0], [0.5, 0.5], [0.25, 0.25, 0.25, 0.25]]},
+    7: {"name": "Syncopation", "desc": "Tied notes and 'Box Turtles'.", "pool": [[1.0], [0.5, 1.0, 0.5], [0.5, 0.25, 0.25]]},
+    8: {"name": "Compound", "desc": "6/8 Time (Wombats & Humptys).", "pool": [[1.5], [0.5, 0.5, 0.5], [1.0, 0.5]]}
 }
 
-COMPOUND_ZOO = {
-    "Bear": [1.5], "Wallaby": [0.5, 0.5, 0.5], "Lemur": [1.0, 0.5],
-    "Wombat": [0.5, 1.0], "Mastodon": [0.75, 0.25, 0.5],
-    "Kingfisher": [1.0, 0.25, 0.25], "Kookaburra": [0.75, 0.25, 0.25, 0.25],
-    "Purple Alligator": [0.25]*6, "Yellow Elephant": [0.25,0.25,0.25,0.25,0.5],
-    "Green Alligator": [0.5,0.25,0.25,0.25,0.25], "Du-plet": "DUPLET"
-}
-
-# --- 2. AUDIO ENGINE (NO REGEN REQUIRED) ---
-def generate_audio_v46(score, bpm=60, timbre="E-Piano"):
+# --- 2. AUDIO ENGINE ---
+def generate_audio_v4(score, bpm=60, timbre="E-Piano"):
     sample_rate = 44100
     total_audio = np.array([], dtype=np.float32)
     beat_dur = 60.0 / bpm 
@@ -62,12 +58,14 @@ def generate_audio_v46(score, bpm=60, timbre="E-Piano"):
     return byte_io.getvalue()
 
 # --- 3. DRILL BUILDING LOGIC ---
-def build_zoo_drill(u_meter, u_key, u_mode, u_range, u_animals, u_measures, show_labels):
+def build_drill(level, mode, u_key, u_range, u_hide_labels):
+    is_68 = (level == 8)
+    ts_str = '6/8' if is_68 else '4/4'
     s = stream.Score()
     p = stream.Part()
-    k = key.Key(u_key, u_mode)
+    k = key.Key(u_key, mode)
     p.append(k)
-    p.append(meter.TimeSignature(u_meter))
+    p.append(meter.TimeSignature(ts_str))
 
     ranges = {"Soprano": "C4", "Alto": "G3", "Tenor": "C3", "Baritone": "G2"}
     tonic_pitch = k.pitchFromDegree(1)
@@ -75,105 +73,73 @@ def build_zoo_drill(u_meter, u_key, u_mode, u_range, u_animals, u_measures, show
         tonic_pitch = tonic_pitch.transpose(12)
     pitches = k.getScale().getPitches(tonic_pitch, tonic_pitch.transpose(12))
 
-    # SOLFÈGE MAP
     s_map = {1:'Do', 2:'Re', 3:'Mi', 4:'Fa', 5:'Sol', 6:'La', 7:'Ti', 8:'Do'}
-    if u_mode == 'minor':
-        s_map.update({3:'Me', 6:'Le', 7:'Te'})
+    if mode == 'minor':
+        s_map[3], s_map[6], s_map[7] = 'Me', 'Le', 'Te'
 
-    # MEASURE 1: ANCHOR
-    anchor_m = stream.Measure(number=1)
-    stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)])
-    stinger.duration.quarterLength = 2.0 if u_meter == '4/4' else 1.5
-    anchor_m.append(stinger)
-    anchor_m.append(note.Rest(quarterLength=stinger.duration.quarterLength))
-    p.append(anchor_m)
+    # Stinger
+    stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)], quarterLength=1.0)
+    p.append(stinger)
+    p.append(note.Rest(quarterLength=1.0))
 
-    # MEASURES 2+: DRILL
-    zoo = SIMPLE_ZOO if u_meter == '4/4' else COMPOUND_ZOO
-    current_deg = 1
-
-    for m_num in range(2, u_measures + 2):
-        m = stream.Measure(number=m_num)
-        beats_needed = 4.0 if u_meter == '4/4' else 3.0
-        beats_filled = 0
-        while beats_filled < beats_needed:
-            choice = random.choice(u_animals)
-            pattern = zoo[choice]
-            if pattern == "TRIPLET":
-                t_notes = []
-                for _ in range(3):
-                    current_deg = random.randint(1, 8)
-                    n = note.Note(pitches[current_deg-1], type='eighth')
-                    if show_labels: n.addLyric(s_map[current_deg])
-                    t_notes.append(n)
-                for n in t_notes: n.duration.appendTuplet(duration.Tuplet(3, 2))
-                m.append(t_notes)
-                beats_filled += 1.0
-            elif pattern == "DUPLET":
-                d_notes = []
-                for _ in range(2):
-                    current_deg = random.randint(1, 8)
-                    n = note.Note(pitches[current_deg-1], type='quarter')
-                    if show_labels: n.addLyric(s_map[current_deg])
-                    d_notes.append(n)
-                for n in d_notes: n.duration.appendTuplet(duration.Tuplet(2, 3))
-                m.append(d_notes)
-                beats_filled += 1.5
+    pool = LEVELS[level]["pool"]
+    num_meas = st.session_state.get('meas_count', 4)
+    limit = 3.0 if is_68 else 4.0
+    
+    for _ in range(num_meas):
+        m_beats = 0
+        while m_beats < limit:
+            cell = random.choice(pool)
+            dur_sum = sum([item if isinstance(item, (float, int)) else 1.0 for item in cell])
+            if m_beats + dur_sum <= limit:
+                for val in cell:
+                    if val == 'R': p.append(note.Rest(quarterLength=1.0))
+                    else:
+                        if st.session_state.get('is_rhythm_only'): n = note.Note("B4", quarterLength=val)
+                        else:
+                            curr_deg = random.randint(1, 8)
+                            n = note.Note(pitches[curr_deg-1], quarterLength=val)
+                            if not u_hide_labels: n.addLyric(s_map[curr_deg])
+                        p.append(n)
+                m_beats += dur_sum
             else:
-                for dur in pattern:
-                    current_deg = random.randint(1, 8)
-                    n = note.Note(pitches[current_deg-1], quarterLength=dur)
-                    if show_labels: n.addLyric(s_map[current_deg])
-                    m.append(n)
-                beats_filled += sum(pattern)
-        p.append(m)
+                p.append(note.Rest(quarterLength=(limit - m_beats)))
+                break
     s.append(p)
     return s
 
-# --- 4. STREAMLIT INTERFACE ---
-st.set_page_config(page_title="SolfMaster v4.6", layout="wide")
-st.title("🎼 SolfMaster v4.6: The Agile Zoo")
+# --- 4. USER INTERFACE ---
+st.set_page_config(page_title="SolfMaster v4.3", layout="wide")
+st.title("🎼 SolfMaster v4.3")
 
 with st.sidebar:
-    u_meter = st.radio("Time Signature", ['4/4', '6/8'])
+    st.header("Settings")
+    u_level = st.slider("Skill Level", 1, 8, 1)
+    st.info(LEVELS[u_level]['desc'])
+    u_focus = st.radio("Focus", ["Melodic + Rhythm", "Rhythm Only"])
+    st.session_state['is_rhythm_only'] = (u_focus == "Rhythm Only")
+    st.session_state['meas_count'] = st.selectbox("Length", [1, 2, 4], index=2)
     u_key = st.selectbox("Key", ['C', 'G', 'F', 'D', 'Bb', 'Eb', 'A'])
     u_mode = st.radio("Mode", ["major", "minor"])
-    u_labels = st.checkbox("Show Solfège Labels", value=True)
-    
-    st.divider()
-    available = list(SIMPLE_ZOO.keys()) if u_meter == '4/4' else list(COMPOUND_ZOO.keys())
-    
-    # Randomize Fix: Checkbox to auto-select all
-    u_all = st.checkbox("Randomize All Animals", value=True)
-    if u_all:
-        u_animals = available
-    else:
-        u_animals = st.multiselect("A La Carte Menu:", available, default=available[:3])
-    
-    st.divider()
-    u_range = st.selectbox("Range", ["Baritone", "Tenor", "Alto", "Soprano"])
-    u_bpm = st.slider("Tempo (BPM)", 40, 120, 60)
-    u_timbre = st.selectbox("Instrument", ["E-Piano", "Percussion", "Organ"])
-    u_measures = st.number_input("Measures", 1, 8, 2)
-    u_dictation = st.checkbox("Dictation Mode")
+    u_range = st.selectbox("Vocal Range", ["Baritone", "Tenor", "Alto", "Soprano"])
+    u_bpm = st.slider("BPM", 40, 120, 65)
+    u_timbre = st.selectbox("Sound", ["E-Piano", "Percussion", "Organ"])
+    u_labels = st.checkbox("Show Labels", value=True)
+    u_dictation = st.checkbox("Dictation (Hide Score)")
 
-# --- GENERATION ---
-if st.button("Generate New Melody", type="primary"):
-    st.session_state['score'] = build_zoo_drill(u_meter, u_key, u_mode, u_range, u_animals, u_measures, u_labels)
+if st.button("Generate Training Drill", type="primary"):
+    st.session_state['score'] = build_drill(u_level, u_mode, u_key, u_range, not u_labels)
+    st.session_state['audio'] = generate_audio_v4(st.session_state['score'], u_bpm, u_timbre)
     try:
-        fn = f"zoo_{random.randint(1,999)}"
+        fn = f"dr_{random.randint(1,999)}"
         st.session_state['score'].write('musicxml.png', fp=fn)
         st.session_state['img'] = f"{fn}-1.png"
     except: st.session_state['img'] = None
 
-# --- DYNAMIC PLAYBACK ---
 if 'score' in st.session_state:
-    st.divider()
-    # Re-generates audio ONLY if tempo/timbre changed, without changing the melody
-    audio_bytes = generate_audio_v46(st.session_state['score'], u_bpm, u_timbre)
-    st.audio(audio_bytes)
-    st.caption(f"Playing at {u_bpm} BPM with {u_timbre} timbre. (Adjust sliders above to change)")
-
+    st.audio(st.session_state['audio'])
     if not u_dictation or st.checkbox("Reveal Answer"):
         if st.session_state.get('img') and os.path.exists(st.session_state['img']):
             st.image(st.session_state['img'])
+        else:
+            st.warning("Score image failed. Try installing MuseScore 4.")
