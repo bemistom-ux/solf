@@ -6,140 +6,160 @@ import io
 import os
 from music21 import stream, note, chord, key, meter, pitch, environment
 
-# --- 0. SYSTEM CONFIG ---
+# --- 0. MUSESCORE CONFIG ---
 try:
     env = environment.Environment()
-    mscore_path = '/Applications/MuseScore 4.app/Contents/MacOS/mscore'
-    if os.path.exists(mscore_path):
-        env['musescoreDirectPNGPath'] = mscore_path
+    paths = ['/Applications/MuseScore 4.app/Contents/MacOS/mscore', '/Applications/MuseScore 3.app/Contents/MacOS/mscore']
+    for p in paths:
+        if os.path.exists(p):
+            env['musescoreDirectPNGPath'] = p
+            break
 except:
     pass
 
-# --- 1. DATA & LEVELS ---
-LEVELS = {
-    1: {"name": "The Pulse", "desc": "Quarter Notes only (The Monkey).", "pool": [[1.0]]},
-    2: {"name": "The Breath", "desc": "Adds Quarter Rests (The Silent Monkey).", "pool": [[1.0], ['R', 1.0]]},
-    3: {"name": "Division", "desc": "Adds Eighth Notes (The Elephant).", "pool": [[1.0], ['R', 1.0], [0.5, 0.5]]},
-    4: {"name": "The Gap", "desc": "Eighths following Rests.", "pool": [[1.0], ['R', 1.0], [0.5, 0.5], ['R', 1.0, 0.5, 0.5]]},
-    5: {"name": "The Dot", "desc": "Dotted Quarters (The Tiger).", "pool": [[1.0], [0.5, 0.5], [1.5, 0.5]]},
-    6: {"name": "Sub-Division", "desc": "Sixteenths (The Alligator).", "pool": [[1.0], [0.5, 0.5], [0.25, 0.25, 0.25, 0.25]]},
-    7: {"name": "Syncopation", "desc": "Tied notes and 'Box Turtles'.", "pool": [[1.0], [0.5, 1.0, 0.5], [0.5, 0.25, 0.25]]},
-    8: {"name": "Compound", "desc": "6/8 Time (Wombats & Humptys).", "pool": [[1.5], [0.5, 0.5, 0.5], [1.0, 0.5]]}
-}
-
-# --- 2. AUDIO ENGINE ---
-def generate_audio_v4(score, bpm=60, timbre="E-Piano"):
+# --- 1. AUDIO ENGINE (E-Piano / Organ / Sine) ---
+def generate_audio_buffer(score, bpm=70, timbre="E-Piano"):
     sample_rate = 44100
     total_audio = np.array([], dtype=np.float32)
-    beat_dur = 60.0 / bpm 
+    quarter_duration = 60.0 / bpm 
 
     for element in score.recurse():
         if isinstance(element, (note.Note, chord.Chord)):
             freqs = [p.frequency for p in element.pitches] if isinstance(element, chord.Chord) else [element.pitch.frequency]
-            dur = element.quarterLength * beat_dur
-            t = np.linspace(0, dur, int(sample_rate * dur), False)
+            duration = element.quarterLength * quarter_duration
+            t = np.linspace(0, duration, int(sample_rate * duration), False)
             tone = np.zeros_like(t)
+
             for f in freqs:
-                if timbre == "Percussion":
-                    tone += np.sin(2 * np.pi * 1400 * t) * np.exp(-t*80)
-                elif timbre == "E-Piano":
-                    tone += np.sin(2 * np.pi * f * t) + 0.4*np.sin(2*np.pi*2*f*t)*np.exp(-t*5)
-                else: # Organ
-                    tone += np.sin(2 * np.pi * f * t) + 0.5*np.sin(2*np.pi*2*f*t)
-            tone = (tone / (len(freqs) if isinstance(element, chord.Chord) else 1)) * 0.7
-            total_audio = np.concatenate([total_audio, tone, np.zeros(int(sample_rate * 0.01))])
-        elif isinstance(element, note.Rest):
-            total_audio = np.concatenate([total_audio, np.zeros(int(sample_rate * element.quarterLength * beat_dur))])
+                if timbre == "E-Piano":
+                    # Fundamental + decaying harmonics for a bell-like strike
+                    tone += np.sin(2 * np.pi * f * t) 
+                    tone += 0.4 * np.sin(2 * np.pi * 2.01 * f * t) * np.exp(-t*4)
+                    tone += 0.15 * np.sin(2 * np.pi * 3.99 * f * t) * np.exp(-t*8)
+                elif timbre == "Organ":
+                    tone += np.sin(2 * np.pi * f * t) + 0.5 * np.sin(2 * np.pi * 2 * f * t)
+                else: # Sine
+                    tone += np.sin(2 * np.pi * f * t)
+
+            tone = (tone / (len(freqs) if isinstance(element, chord.Chord) else 1)) * 0.6
+            window = np.ones_like(tone)
+            fade = int(sample_rate * 0.02)
+            if len(tone) > fade * 2:
+                window[:fade] = np.linspace(0, 1, fade)
+                window[-fade:] = np.linspace(1, 0, fade)
+            
+            total_audio = np.concatenate([total_audio, tone * window, np.zeros(int(sample_rate * 0.02))])
 
     if total_audio.size > 0:
         total_audio = total_audio / (np.max(np.abs(total_audio)) + 1e-6)
+    
+    audio_int16 = (total_audio * 32767).astype(np.int16)
     byte_io = io.BytesIO()
-    wavfile.write(byte_io, sample_rate, (total_audio * 32767).astype(np.int16))
+    wavfile.write(byte_io, sample_rate, audio_int16)
     return byte_io.getvalue()
 
-# --- 3. DRILL BUILDING LOGIC ---
-def build_drill(level, mode, u_key, u_range, u_hide_labels):
-    is_68 = (level == 8)
-    ts_str = '6/8' if is_68 else '4/4'
+# --- 2. SOLFÈGE MAPPING LOGIC ---
+def get_solfege_name(degree, mode):
+    # Major Scale Syllables
+    maj = {1:'Do', 2:'Re', 3:'Mi', 4:'Fa', 5:'Sol', 6:'La', 7:'Ti', 8:'Do'}
+    # Minor Scale Syllables (Do-based)
+    min_scale = {1:'Do', 2:'Re', 3:'Me', 4:'Fa', 5:'Sol', 6:'Le', 7:'Te', 8:'Do'}
+    
+    if mode == 'minor':
+        return min_scale.get(degree, "??")
+    return maj.get(degree, "??")
+
+# --- 3. DRILL LOGIC ---
+def generate_unified_drill(k_name, mode, ts_str, v_range, leap, rhythm_list, show_labels):
     s = stream.Score()
     p = stream.Part()
-    k = key.Key(u_key, mode)
+    k = key.Key(k_name, mode)
     p.append(k)
     p.append(meter.TimeSignature(ts_str))
-
-    ranges = {"Soprano": "C4", "Alto": "G3", "Tenor": "C3", "Baritone": "G2"}
-    tonic_pitch = k.pitchFromDegree(1)
-    while tonic_pitch.ps < pitch.Pitch(ranges[u_range]).ps:
-        tonic_pitch = tonic_pitch.transpose(12)
-    pitches = k.getScale().getPitches(tonic_pitch, tonic_pitch.transpose(12))
-
-    s_map = {1:'Do', 2:'Re', 3:'Mi', 4:'Fa', 5:'Sol', 6:'La', 7:'Ti', 8:'Do'}
-    if mode == 'minor':
-        s_map[3], s_map[6], s_map[7] = 'Me', 'Le', 'Te'
-
-    # Stinger
-    stinger = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)], quarterLength=1.0)
-    p.append(stinger)
-    p.append(note.Rest(quarterLength=1.0))
-
-    pool = LEVELS[level]["pool"]
-    num_meas = st.session_state.get('meas_count', 4)
-    limit = 3.0 if is_68 else 4.0
     
-    for _ in range(num_meas):
-        m_beats = 0
-        while m_beats < limit:
-            cell = random.choice(pool)
-            dur_sum = sum([item if isinstance(item, (float, int)) else 1.0 for item in cell])
-            if m_beats + dur_sum <= limit:
-                for val in cell:
-                    if val == 'R': p.append(note.Rest(quarterLength=1.0))
-                    else:
-                        if st.session_state.get('is_rhythm_only'): n = note.Note("B4", quarterLength=val)
-                        else:
-                            curr_deg = random.randint(1, 8)
-                            n = note.Note(pitches[curr_deg-1], quarterLength=val)
-                            if not u_hide_labels: n.addLyric(s_map[curr_deg])
-                        p.append(n)
-                m_beats += dur_sum
+    ranges = {"Soprano": "C4", "Alto": "G3", "Tenor": "C3", "Baritone": "G2"}
+    base = pitch.Pitch(ranges[v_range])
+    tonic = k.pitchFromDegree(1)
+    while tonic.ps < base.ps: tonic = tonic.transpose(12)
+    
+    scale_pitches = k.getScale().getPitches(tonic, tonic.transpose(12))
+    
+    # 1. ANCHOR CHORD
+    anchor = chord.Chord([k.pitchFromDegree(1), k.pitchFromDegree(3), k.pitchFromDegree(5)], 
+                         quarterLength=4.0 if ts_str=="4/4" else 3.0)
+    anchor.addLyric("Anchor")
+    p.append(anchor)
+
+    # 2. 4 MEASURES OF MELODY
+    curr_deg = 1
+    beats_per_measure = 4.0 if ts_str == "4/4" else 3.0 
+    
+    for _ in range(4):
+        beats = 0
+        while beats < beats_per_measure:
+            pattern = random.choice(rhythm_list)
+            if beats + sum(pattern) <= beats_per_measure:
+                for d in pattern:
+                    curr_deg = max(1, min(8, curr_deg + random.randint(-leap, leap)))
+                    n = note.Note(scale_pitches[curr_deg-1], quarterLength=d)
+                    if show_labels:
+                        deg_num = k.getScaleDegreeAndAccidentalFromPitch(n.pitch)[0]
+                        n.addLyric(get_solfege_name(deg_num, mode))
+                    p.append(n)
+                beats += sum(pattern)
             else:
-                p.append(note.Rest(quarterLength=(limit - m_beats)))
+                rem = beats_per_measure - beats
+                p.append(note.Note(scale_pitches[curr_deg-1], quarterLength=rem))
                 break
     s.append(p)
     return s
 
-# --- 4. USER INTERFACE ---
-st.set_page_config(page_title="SolfMaster v4.3", layout="wide")
-st.title("🎼 SolfMaster v4.3")
+# --- 4. UI ---
+st.set_page_config(page_title="Solfège Lab v3.1", layout="wide")
+st.title("🎹 Advanced Solfège & Dictation Lab")
 
 with st.sidebar:
-    st.header("Settings")
-    u_level = st.slider("Skill Level", 1, 8, 1)
-    st.info(LEVELS[u_level]['desc'])
-    u_focus = st.radio("Focus", ["Melodic + Rhythm", "Rhythm Only"])
-    st.session_state['is_rhythm_only'] = (u_focus == "Rhythm Only")
-    st.session_state['meas_count'] = st.selectbox("Length", [1, 2, 4], index=2)
+    st.header("1. Musical Setup")
+    u_ts = st.selectbox("Meter", ["4/4", "6/8"])
     u_key = st.selectbox("Key", ['C', 'G', 'F', 'D', 'Bb', 'Eb', 'A'])
     u_mode = st.radio("Mode", ["major", "minor"])
     u_range = st.selectbox("Vocal Range", ["Baritone", "Tenor", "Alto", "Soprano"])
-    u_bpm = st.slider("BPM", 40, 120, 65)
-    u_timbre = st.selectbox("Sound", ["E-Piano", "Percussion", "Organ"])
-    u_labels = st.checkbox("Show Labels", value=True)
-    u_dictation = st.checkbox("Dictation (Hide Score)")
+    u_bpm = st.slider("BPM", 40, 120, 60)
+    u_leap = st.slider("Leap Complexity", 1, 3, 1)
+    u_timbre = st.selectbox("Instrument Sound", ["E-Piano", "Organ", "Sine"])
+    u_labels = st.checkbox("Show Solfège Syllables", value=True)
+    
+    st.header("2. Rhythms")
+    if u_ts == "4/4":
+        r_opts = {"Monkey (1/4)": [1.0], "Elephant (2/8)": [0.5, 0.5], "Alligator (4/16)": [0.25]*4}
+    else: # 6/8
+        r_opts = {"Dotted Quarter": [1.5], "Wombat (3/8s)": [0.5]*3, "Humpty (Quarter-8th)": [1.0, 0.5]}
+    
+    active_rhythms = [r_opts[r] for r in r_opts if st.checkbox(r, value=True)]
 
-if st.button("Generate Training Drill", type="primary"):
-    st.session_state['score'] = build_drill(u_level, u_mode, u_key, u_range, not u_labels)
-    st.session_state['audio'] = generate_audio_v4(st.session_state['score'], u_bpm, u_timbre)
+if st.button("Generate New Drill", type="primary"):
+    st.session_state['drill'] = generate_unified_drill(u_key, u_mode, u_ts, u_range, u_leap, active_rhythms, u_labels)
     try:
-        fn = f"dr_{random.randint(1,999)}"
-        st.session_state['score'].write('musicxml.png', fp=fn)
-        st.session_state['img'] = f"{fn}-1.png"
-    except: st.session_state['img'] = None
+        img_id = random.randint(1, 9999)
+        st.session_state['drill'].write('musicxml.png', fp=f"drill_{img_id}")
+        st.session_state['img_path'] = f"drill_{img_id}-1.png"
+    except:
+        st.session_state['img_path'] = None
 
-if 'score' in st.session_state:
-    st.audio(st.session_state['audio'])
-    if not u_dictation or st.checkbox("Reveal Answer"):
-        if st.session_state.get('img') and os.path.exists(st.session_state['img']):
-            st.image(st.session_state['img'])
+if 'drill' in st.session_state:
+    st.divider()
+    
+    st.subheader("1. Listen to the Melody")
+    audio = generate_audio_buffer(st.session_state['drill'], bpm=u_bpm, timbre=u_timbre)
+    st.audio(audio, format="audio/wav")
+    
+    st.subheader("2. Score Display")
+    reveal = st.checkbox("Reveal Score (Dictation Mode)", value=True)
+    
+    if reveal:
+        if st.session_state['img_path'] and os.path.exists(st.session_state['img_path']):
+            st.image(st.session_state['img_path'])
         else:
-            st.warning("Score image failed. Try installing MuseScore 4.")
+            st.warning("Ensure MuseScore is installed. Showing notes as text:")
+            notes = [f"{n.lyric or n.name}" for n in st.session_state['drill'].recurse().notes]
+            st.code(" | ".join(notes))
