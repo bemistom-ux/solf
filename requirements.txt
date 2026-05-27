@@ -2,3 +2,4 @@ streamlit
 music21
 numpy
 scipy
+musescore3
